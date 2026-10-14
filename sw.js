@@ -1,10 +1,11 @@
 /* Service worker: caches the app so it opens with no signal. */
-const CACHE = 'avss-v1.0.2';
+const CACHE = 'avss-v1.0.3';
 const ASSETS = ['./', './index.html', './app.js', './styles.css', './config.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));
+  // cache: 'reload' bypasses the browser's HTTP cache, so a new version never stores old copies of the files.
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS.map(u => new Request(u, { cache: 'reload' })))));
 });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
