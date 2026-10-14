@@ -1,5 +1,5 @@
 /* Service worker: caches the app so it opens with no signal. */
-const CACHE = 'avss-v1.0.3';
+const CACHE = 'avss-v1.0.4';
 const ASSETS = ['./', './index.html', './app.js', './styles.css', './config.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png'];
 
