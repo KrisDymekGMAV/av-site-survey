@@ -1,6 +1,6 @@
 'use strict';
 /* AV Site Survey — offline-first PWA with Google Drive sync */
-const APP_VERSION = '1.0.3';
+const APP_VERSION = '1.0.4';
 const CFG = Object.assign({ GOOGLE_CLIENT_ID: '', GOOGLE_API_KEY: '', GOOGLE_APP_ID: '', DRIVE_SCOPE: 'https://www.googleapis.com/auth/drive' }, window.APP_CONFIG || {});
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
