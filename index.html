@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AV Site Survey</title>
+<meta name="theme-color" content="#1d2129">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <button class="ib" id="back" aria-label="Back">‹</button>
+  <h1 id="title">AV Site Survey</h1>
+  <button class="ib" id="guideBtn" aria-label="Survey guide">?</button>
+  <button class="ib" id="setBtn" aria-label="Settings">⚙</button>
+</header>
+<button id="syncbar" class="syncbar"></button>
+<main id="view"></main>
+<div id="fab" class="fab hid"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div id="modal" class="modal hid"></div>
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').then(reg => {
+      reg.addEventListener('updatefound', () => {
+        const nw = reg.installing;
+        nw && nw.addEventListener('statechange', () => {
+          if (nw.state === 'installed' && navigator.serviceWorker.controller && window.onAppUpdate) window.onAppUpdate(nw);
+        });
+      });
+    }).catch(() => {});
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloaded) { reloaded = true; location.reload(); } });
+  });
+}
+</script>
+</body>
+</html>
