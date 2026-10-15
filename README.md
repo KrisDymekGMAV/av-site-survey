@@ -17,7 +17,8 @@ Everything is saved on the device first (IndexedDB). When there is signal and yo
 | `config.js` | **Your Google settings — edit this** |
 | `sw.js` | Service worker — makes the app work offline |
 | `manifest.webmanifest` | Makes it installable (name, icon, colours) |
-| `icons/` | App icons |
+| `jspdf.umd.min.js` | PDF library (jsPDF 3.0.4, MIT licence — see `jspdf-LICENSE.txt`), bundled so reports work offline |
+| `icon-*.png`, `maskable-512.png`, `apple-touch-icon.png` | App icons (in the main folder, next to `index.html`) |
 
 The app works without any Google setup — it just stays "saved on this phone only" until `config.js` is filled in.
 
@@ -28,7 +29,7 @@ The app works without any Google setup — it just stays "saved on this phone on
 A PWA must be served over **HTTPS** from a real web address. GitHub Pages is the simplest:
 
 1. Create a GitHub account if you don't have one, then a new **public** repository, e.g. `av-site-survey`.
-2. **Add file → Upload files**, drag in everything from this folder (keep the `icons` folder), commit.
+2. **Add file → Upload files**, drag in everything from this folder, commit.
 3. **Settings → Pages** → Source: *Deploy from a branch* → Branch: `main`, folder `/ (root)` → Save.
 4. After a minute the app is at `https://YOUR-USERNAME.github.io/av-site-survey/`.
 
@@ -86,7 +87,16 @@ AV Surveys/                      ← the folder you chose
 
 **Another device / colleague:** home screen → **Open site from Drive** lists the sites in the folder; pick one to load it. Their changes then upload back to the same `site-data.json`.
 
-## 5. How offline and sync work
+## 5. PDF reports
+
+- **Site → PDF report** makes one report for every space at the site; **PDF report for this space** at the bottom of a space makes a single-space report.
+- Contents: cover page (site, client, contact, survey date, surveyor, list of spaces), then per space: details, client requirements, measurements and display-size estimate, environment, infrastructure, existing equipment, notes, voice-note list, checklist and photos (two per row, with captions).
+- When it's ready choose **Share** (email, Teams, WhatsApp…), **Download**, or **Save to Google Drive** (uploads into the site or space folder, now or when back online).
+- Works offline. Full-size photos on the phone are used; if a photo is only in Drive, it's downloaded when connected, otherwise the thumbnail is used and marked *low-resolution preview*.
+- **Branding:** ⚙ Settings → *Report branding* — logo (PNG or JPG; transparent PNG looks best), company name (top of each page) and footer text. Stored per phone.
+- The built-in PDF fonts only cover Western European characters. Polish and other accented letters print without accents (e.g. ł → l, ż → z) rather than as garbage.
+
+## 6. How offline and sync work
 
 - Every change saves to the phone immediately. The bar under the header shows what's waiting.
 - Photos are stored full size (up to 3000 px) plus a thumbnail; voice clips up to 10 minutes.
@@ -94,11 +104,11 @@ AV Surveys/                      ← the folder you chose
 - Failed uploads retry up to 6 times, then show under Settings with the error and a **Retry** button.
 - **Settings → Free up space** removes full-size files that are already in Drive (thumbnails stay).
 
-## 6. Moving surveys from the Claude version
+## 7. Moving surveys from the Claude version
 
 In the old app: open the site → **Export site data for import (.json)**. In this app: home → **Import site file**. Survey fields, captions, checklists and in-app voice clips come across. Photos that were in Drive come across as links; photos stored only inside the Claude app can't be exported, so re-take or download them first.
 
-## 7. Known limits — please test before relying on it
+## 8. Known limits — please test before relying on it
 
 - The Drive sign-in, folder picker and uploads were written against Google's documented APIs but **have not been run against a live Google account**. Test with one small site end-to-end first.
 - If two people edit the **same site at the same time**, the last one to upload `site-data.json` wins. Photos and clips are never overwritten (each is its own file).
@@ -108,6 +118,6 @@ In the old app: open the site → **Export site data for import (.json)**. In th
 - Android may clear app data for un-installed web apps under storage pressure. Installing the app (and checking *Settings → Storage* shows "Protected") avoids this.
 - No auto-fill from notes in this version.
 
-## 8. Want a real APK later?
+## 9. Want a real APK later?
 
 The same files can be wrapped as an Android package (for the Play Store or company device management) using **PWABuilder** (<https://www.pwabuilder.com>) or Google's **Bubblewrap**. That's optional — the Chrome install already behaves like an app.

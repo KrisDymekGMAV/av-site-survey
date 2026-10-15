@@ -1,6 +1,6 @@
 'use strict';
 /* AV Site Survey — offline-first PWA with Google Drive sync */
-const APP_VERSION = '1.0.4';
+const APP_VERSION = '1.0.5';
 const CFG = Object.assign({ GOOGLE_CLIENT_ID: '', GOOGLE_API_KEY: '', GOOGLE_APP_ID: '', DRIVE_SCOPE: 'https://www.googleapis.com/auth/drive' }, window.APP_CONFIG || {});
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
@@ -341,6 +341,14 @@ async function runJob(j) {
     if (s.driveDataId && s.driveDataParent === sf) { try { up = await gd.replace(s.driveDataId, blob); } catch (e) { if (e.status !== 404) throw e; } }
     if (!up) { up = await gd.upload('site-data.json', blob, 'application/json', sf); s.driveDataId = up.id; s.driveDataParent = sf; }
     s.lastSynced = nowIso(); await idb.put('sites', s);
+  } else if (j.type === 'pdf') {
+    const b = j.blobId && await idb.get('blobs', j.blobId); if (!b) return;
+    const s = data.sites.find(x => x.id === j.siteId); if (!s) { await idb.del('blobs', j.blobId); return; }
+    const room = j.roomId && data.rooms.find(x => x.id === j.roomId);
+    const fid = room ? await roomFolder(room) : await siteFolder(s);
+    await gd.upload(j.name || 'AV survey report.pdf', b.blob, 'application/pdf', fid);
+    await idb.del('blobs', j.blobId);
+    toast('PDF report saved to Google Drive');
   } else if (j.type === 'report') {
     const s = data.sites.find(x => x.id === j.siteId); if (!s) return;
     const rooms = j.roomId ? data.rooms.filter(x => x.id === j.roomId) : data.rooms.filter(x => x.siteId === s.id);
@@ -536,6 +544,200 @@ function buildMd(s, rooms) {
   return md;
 }
 
+/* ---------- PDF report ---------- */
+function loadImg(src) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('Image could not be read')); i.src = src; }); }
+async function prepImage(src, max = 1400, q = .8) {
+  const img = await loadImg(src);
+  const sc = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * sc); c.height = Math.round(img.naturalHeight * sc);
+  const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(img, 0, 0, c.width, c.height);
+  return { data: c.toDataURL('image/jpeg', q), w: c.width, h: c.height };
+}
+async function photoSource(p) {
+  if (p.blobId) { const b = await idb.get('blobs', p.blobId); if (b) { const u = URL.createObjectURL(b.blob); return { url: u, revoke: () => URL.revokeObjectURL(u) }; } }
+  if (p.driveId && gd.valid() && navigator.onLine) {
+    try { const r = await gd.api('files/' + encodeURIComponent(p.driveId) + '?alt=media', { raw: true }); const u = URL.createObjectURL(await r.blob()); return { url: u, revoke: () => URL.revokeObjectURL(u) }; } catch (e) {}
+  }
+  if (p.thumb) return { url: p.thumb, revoke: () => {}, low: true };
+  return null;
+}
+// Built-in PDF fonts only cover Western European characters; convert the rest so nothing prints as garbage.
+const pdfTxt = s => String(s ?? '').replace(/[łŁ]/g, m => m === 'ł' ? 'l' : 'L').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/[—–•]/g, '-').replace(/×/g, 'x').replace(/≥/g, '>=').replace(/≤/g, '<=').replace(/≈/g, 'approx. ').replace(/[″“”]/g, '"').replace(/[‘’]/g, "'")
+  .replace(/…/g, '...').replace(/→/g, '->').replace(/€/g, 'EUR ').replace(/²/g, '2').replace(/³/g, '3').replace(/[✓☁⏳]/g, '').replace(/[^\x0A\x20-\x7E\xA0-\xFF]/g, '?');
+const pdfName = (s, rooms) => fileSafe(s.name || 'site') + (rooms.length === 1 && rooms[0] ? ' - ' + fileSafe(rooms[0].name || 'space') : '') + ' - AV survey report ' + today() + '.pdf';
+
+async function buildPdf(s, rooms, onProg) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4', compress: true });
+  const W = 210, H = 297, M = 15, CW = W - 2 * M, INK = [29, 33, 41], GREY = [89, 98, 112], ACC = [184, 84, 28], RULE = [217, 213, 204];
+  const br = settings.brand || {};
+  let y = 0, logo = null;
+  if (br.logo) { try { const im = await loadImg(br.logo); logo = { data: br.logo, w: im.naturalWidth, h: im.naturalHeight, fmt: /^data:image\/png/.test(br.logo) ? 'PNG' : 'JPEG' }; } catch (e) {} }
+  const header = () => {
+    if (logo) { let h = 13, w = h * logo.w / logo.h; if (w > 55) { w = 55; h = w * logo.h / logo.w; } doc.addImage(logo.data, logo.fmt, M, 9 + (13 - h) / 2, w, h); }
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...GREY);
+    doc.text(pdfTxt('AV site survey - ' + (s.name || 'Untitled site')), W - M, 14, { align: 'right' });
+    if (br.company) doc.text(pdfTxt(br.company), W - M, 18.5, { align: 'right' });
+    doc.setDrawColor(...ACC); doc.setLineWidth(0.6); doc.line(M, 25, W - M, 25);
+    doc.setTextColor(...INK); y = 33;
+  };
+  const newPage = () => { doc.addPage(); header(); };
+  const ensure = h => { if (y + h > H - 18) newPage(); };
+  const sectionTitle = t => { ensure(16); y += 2; doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(...ACC); doc.text(pdfTxt(t).toUpperCase(), M, y); y += 1.8; doc.setDrawColor(...RULE); doc.setLineWidth(0.2); doc.line(M, y, W - M, y); y += 5; doc.setTextColor(...INK); };
+  const kv = rows => {
+    const LW = 54; doc.setFontSize(9.5);
+    for (const [l, v] of rows) {
+      if (v === '' || v == null) continue;
+      doc.setFont('helvetica', 'normal'); const lines = doc.splitTextToSize(pdfTxt(v), CW - LW); const h = lines.length * 4.4 + 1.8;
+      ensure(h); doc.setTextColor(...GREY); doc.text(doc.splitTextToSize(pdfTxt(l), LW - 3), M, y); doc.setTextColor(...INK); doc.text(lines, M + LW, y); y += h;
+    }
+  };
+  const para = (t, label) => {
+    if (!t) return; doc.setFontSize(9.5);
+    if (label) { ensure(10); doc.setFont('helvetica', 'normal'); doc.setTextColor(...GREY); doc.text(pdfTxt(label), M, y); y += 4.6; doc.setTextColor(...INK); }
+    doc.setFont('helvetica', 'normal');
+    for (const ln of doc.splitTextToSize(pdfTxt(t), CW)) { ensure(5); doc.text(ln, M, y); y += 4.4; }
+    y += 2;
+  };
+  const any = (r, ks) => ks.some(k => r[k] !== '' && r[k] != null);
+
+  /* cover */
+  header();
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(22); const tl = doc.splitTextToSize(pdfTxt(s.name || 'Untitled site'), CW); doc.text(tl, M, y + 6); y += 6 + tl.length * 9;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(12); doc.setTextColor(...GREY); doc.text(rooms.length === 1 ? 'AV site survey report - ' + pdfTxt(rooms[0].name || 'space') : 'AV site survey report', M, y); y += 10; doc.setTextColor(...INK);
+  kv([['Client', s.client], ['Site address', s.address], ['Site contact', s.contact], ['Survey date', s.date ? new Date(s.date).toLocaleDateString('en-GB') : ''], ['Surveyed by', s.surveyor], ['Report prepared by', br.company], ['Report generated', new Date().toLocaleString('en-GB')]]);
+  if (rooms.length > 1) {
+    sectionTitle('Spaces surveyed (' + rooms.length + ')');
+    doc.setFontSize(9.5);
+    rooms.forEach((r, i) => {
+      ensure(6); doc.setFont('helvetica', 'bold'); doc.text(pdfTxt((i + 1) + '. ' + (r.name || 'Unnamed space')), M, y);
+      doc.setFont('helvetica', 'normal'); doc.setTextColor(...GREY);
+      const done = Object.values(r.checks || {}).filter(Boolean).length;
+      doc.text(pdfTxt([r.spaceType, r.purpose, r.photos.length + ' photos', done + '/' + CHECKLIST.length + ' checks'].filter(Boolean).join('  |  ')), M + 70, y);
+      doc.setTextColor(...INK); y += 5.5;
+    });
+  }
+
+  /* spaces */
+  const totalPhotos = rooms.reduce((n, r) => n + r.photos.length, 0); let done = 0;
+  for (const r of rooms) {
+    newPage();
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(16); const nl = doc.splitTextToSize(pdfTxt(r.name || 'Unnamed space'), CW); doc.text(nl, M, y); y += nl.length * 7;
+    const sub = [r.spaceType, r.purpose, r.floor ? 'Floor / zone: ' + r.floor : ''].filter(Boolean).join('  |  ');
+    if (sub) { doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY); doc.text(pdfTxt(sub), M, y); doc.setTextColor(...INK); y += 7; }
+    kv([['Survey date', r.date ? new Date(r.date).toLocaleDateString('en-GB') : ''], ['Surveyed by', r.surveyor], ['Capacity / occupancy', r.capacity], ['Operating hours', r.operatingHours]]);
+
+    if (r.systems.length || r.requirements || r.budgetNotes) {
+      sectionTitle('Client requirements');
+      kv([['Systems wanted', r.systems.join(', ')]]);
+      para(r.requirements, 'What the client wants');
+      para(r.budgetNotes, 'Constraints');
+    }
+    if (any(r, ['L', 'W', 'H', 'ceilingType', 'ceilingVoid', 'maxMount', 'mountStruct', 'coverage', 'farthest', 'nearest', 'displayWall', 'displayWallWidth', 'wallConstruction', 'tableL', 'tableW'])) {
+      sectionTitle('Measurements');
+      const L = parseFloat(r.L), Wd = parseFloat(r.W), Ht = parseFloat(r.H);
+      kv([
+        ['Length x width x height', [r.L, r.W, r.H].some(Boolean) ? `${r.L || '?'} x ${r.W || '?'} x ${r.H || '?'} m` : ''],
+        ['Floor area / volume', L && Wd ? (L * Wd).toFixed(1) + ' m²' + (Ht ? ' / ' + (L * Wd * Ht).toFixed(0) + ' m³' : '') : ''],
+        ['Ceiling', [r.ceilingType, r.ceilingVoid ? r.ceilingVoid + ' mm void' : ''].filter(Boolean).join(', ')],
+        ['Max mounting height', r.maxMount ? r.maxMount + ' m' : ''], ['Mounting structure', r.mountStruct], ['Coverage zones', r.coverage],
+        ['Farthest / nearest viewer', [r.farthest, r.nearest].some(Boolean) ? `${r.farthest || '?'} m / ${r.nearest || '?'} m` : ''],
+        ['Display wall', [r.displayWall, r.displayWallWidth ? r.displayWallWidth + ' m usable' : ''].filter(Boolean).join(', ')],
+        ['Display wall construction', r.wallConstruction],
+        ['Table', [r.tableL, r.tableW].some(Boolean) ? `${r.tableL || '?'} x ${r.tableW || '?'} m` : '']
+      ]);
+      const d = parseFloat(r.farthest);
+      if (d) {
+        kv([['Display size estimate', `Minimum image height for farthest viewer at ${d} m (4/6/8 rule of thumb): passive viewing ${(d / 8 * 1000).toFixed(0)} mm, basic decision making ${(d / 6 * 1000).toFixed(0)} mm, analytical ${(d / 4 * 1000).toFixed(0)} mm. Verify against AVIXA DISCAS before specifying.`]]);
+      }
+    }
+    if (any(r, ['light', 'lightControl', 'windows', 'blinds', 'noise', 'acoustics', 'spl', 'conditions', 'ipRating'])) {
+      sectionTitle('Environment');
+      kv([['Ambient light', r.light], ['Lighting control', r.lightControl], ['Windows / glazing', r.windows], ['Blinds', r.blinds], ['Background noise', r.noise], ['Acoustics (clap test)', r.acoustics], ['Measured background noise', r.spl ? r.spl + ' dB(A)' : ''], ['Conditions', r.conditions], ['IP rating required', r.ipRating]]);
+    }
+    if (any(r, ['power', 'network', 'containment', 'floorBox', 'access', 'heightAccess'])) {
+      sectionTitle('Infrastructure');
+      kv([['Power', r.power], ['Network', r.network], ['Cable routes / containment', r.containment], ['Floor boxes / grommets', r.floorBox], ['Access / H&S', r.access], ['Working at height', r.heightAccess]]);
+    }
+    if (r.existing) { sectionTitle('Existing equipment'); para(r.existing); }
+    if (r.notes) { sectionTitle('Notes'); para(r.notes); }
+    if (r.clips.length) {
+      sectionTitle('Voice notes'); doc.setFontSize(9.5); doc.setFont('helvetica', 'normal');
+      r.clips.forEach((c, i) => {
+        ensure(6); const t = pdfTxt(`${i + 1}. ${c.label || 'Untitled'} (${c.dur}s)`);
+        if (c.driveUrl) { doc.setTextColor(...ACC); doc.textWithLink(t + '  - open in Google Drive', M, y, { url: c.driveUrl }); doc.setTextColor(...INK); }
+        else doc.text(t + '  - stored on the surveyor\'s device', M, y);
+        y += 5.2;
+      });
+    }
+    sectionTitle('Survey checklist');
+    doc.setFontSize(9.5); doc.setFont('helvetica', 'normal');
+    CHECKLIST.forEach((c, i) => {
+      const lines = doc.splitTextToSize(pdfTxt(c), CW - 8); ensure(lines.length * 4.4 + 1.5);
+      doc.setDrawColor(...GREY); doc.setLineWidth(0.3); doc.rect(M, y - 3.1, 3.4, 3.4);
+      if (r.checks[i]) { doc.setDrawColor(...ACC); doc.setLineWidth(0.6); doc.line(M + 0.6, y - 1.4, M + 1.4, y - 0.3); doc.line(M + 1.4, y - 0.3, M + 3.0, y - 2.7); }
+      doc.setTextColor(...(r.checks[i] ? INK : GREY)); doc.text(lines, M + 6, y); doc.setTextColor(...INK); y += lines.length * 4.4 + 1.5;
+    });
+    if (r.photos.length) {
+      ensure(64 + 30);
+      sectionTitle('Photos (' + r.photos.length + ')');
+      const gap = 6, colW = (CW - gap) / 2, maxH = 64; let rowY = y;
+      for (let i = 0; i < r.photos.length; i++) {
+        const p = r.photos[i], col = i % 2;
+        if (col === 0) { ensure(maxH + 12); rowY = y; }
+        done++; if (onProg) onProg(done, totalPhotos);
+        let img = null, src = null;
+        try { src = await photoSource(p); if (src) img = await prepImage(src.url); } catch (e) {} finally { if (src) src.revoke(); }
+        const x0 = M + col * (colW + gap);
+        if (img) {
+          let w = colW, h = w * img.h / img.w; if (h > maxH) { h = maxH; w = h * img.w / img.h; }
+          const x = x0 + (colW - w) / 2;
+          doc.addImage(img.data, 'JPEG', x, rowY, w, h);
+          if (p.driveUrl) doc.link(x, rowY, w, h, { url: p.driveUrl });
+        } else { doc.setDrawColor(...RULE); doc.rect(x0, rowY, colW, maxH); doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(...GREY); doc.text('Image not available on this device', x0 + colW / 2, rowY + maxH / 2, { align: 'center' }); doc.setTextColor(...INK); }
+        doc.setFontSize(8.5); doc.setFont('helvetica', 'normal');
+        const cap = pdfTxt(`Photo ${i + 1}${p.caption ? ': ' + p.caption : ''}${src && src.low ? ' (low-resolution preview)' : ''}`);
+        doc.text(doc.splitTextToSize(cap, colW).slice(0, 2), x0, rowY + maxH + 4);
+        if (col === 1 || i === r.photos.length - 1) y = rowY + maxH + 13;
+      }
+    }
+  }
+
+  /* footer on every page */
+  const n = doc.getNumberOfPages();
+  for (let i = 1; i <= n; i++) {
+    doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY);
+    doc.setDrawColor(...RULE); doc.setLineWidth(0.2); doc.line(M, H - 13, W - M, H - 13);
+    const ft = br.footer || br.company || ''; if (ft) doc.text(doc.splitTextToSize(pdfTxt(ft), CW - 30).slice(0, 2), M, H - 8.5);
+    doc.text('Page ' + i + ' of ' + n, W - M, H - 8.5, { align: 'right' });
+  }
+  return doc.output('blob');
+}
+async function makePdf(s, rooms, btn) {
+  if (!window.jspdf) { toast('The PDF tool did not load — reload the app'); return; }
+  const t = btn.textContent; btn.disabled = true; btn.textContent = 'Building PDF…';
+  let blob;
+  try { blob = await buildPdf(s, rooms, (i, n) => { btn.textContent = `Adding photos ${i}/${n}…`; }); }
+  catch (e) { toast('PDF failed: ' + (e.message || e)); return; }
+  finally { btn.disabled = false; btn.textContent = t; }
+  const name = pdfName(s, rooms);
+  const file = new File([blob], name, { type: 'application/pdf' });
+  let canShare = false; try { canShare = !!(navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) {}
+  const opts = [];
+  if (canShare) opts.push({ label: 'Share', sub: 'Email, Teams, WhatsApp…', value: 'share' });
+  opts.push({ label: 'Download PDF', sub: 'Save to the phone\'s Downloads', value: 'dl' });
+  if (gd.configured() && settings.driveOn && settings.folderId) opts.push({ label: 'Save to Google Drive', sub: canSync() ? 'Uploads now' : 'Uploads when connected', value: 'drive' });
+  const v = await ui.choose(`${name}\n${(blob.size / 1048576).toFixed(1)} MB${(settings.brand && settings.brand.logo) ? '' : '\nTip: add your logo in ⚙ Settings → Report branding.'}`, opts, 'Report ready');
+  if (v === 'share') { try { await navigator.share({ files: [file], title: name }); } catch (e) { if (e.name !== 'AbortError') toast('Sharing failed — try Download'); } }
+  else if (v === 'dl') downloadFile(name, blob);
+  else if (v === 'drive') {
+    const bid = uid(); await idb.put('blobs', { id: bid, blob, mime: 'application/pdf' });
+    await enqueue({ type: 'pdf', siteId: s.id, roomId: rooms.length === 1 ? rooms[0].id : '', blobId: bid, name });
+    toast(canSync() ? 'Uploading report to Drive…' : 'Report queued — uploads when connected');
+  }
+}
+
 /* ---------- navigation ---------- */
 function go(r, push = true) { route = r; if (push) history.pushState(r, ''); render(); window.scrollTo(0, 0); }
 window.addEventListener('popstate', e => { if (!$('#modal').classList.contains('hid') && $('#modal')._close) { $('#modal')._close(null); } route = e.state || { v: 'home' }; render(); });
@@ -626,7 +828,7 @@ function renderEditSite(main) {
 }
 async function deleteRoomData(r) {
   for (const it of [...r.photos, ...r.clips]) if (it.blobId) await idb.del('blobs', it.blobId);
-  for (const j of await idb.all('queue')) if (j.roomId === r.id) await idb.del('queue', j.id);
+  for (const j of await idb.all('queue')) if (j.roomId === r.id) { if (j.blobId) await idb.del('blobs', j.blobId); await idb.del('queue', j.id); }
   await idb.del('rooms', r.id); data.rooms = data.rooms.filter(x => x.id !== r.id);
 }
 
@@ -635,18 +837,17 @@ function renderSite(main, fab) {
   const s = data.sites.find(x => x.id === route.id); if (!s) { route = { v: 'home' }; return render(); }
   setTitle(s.name || 'Untitled site', s.client || s.address || '');
   const rooms = data.rooms.filter(r => r.siteId === s.id);
-  main.innerHTML = `<div class="row" style="margin-bottom:12px"><button class="btn sec sm" id="editSite">Edit site</button><button class="btn sec sm" id="mdSite">Report (.md)</button></div>`
+  main.innerHTML = `<div class="row" style="margin-bottom:12px"><button class="btn sec sm" id="editSite">Edit site</button><button class="btn sm" id="pdfSite">PDF report</button></div>`
     + (rooms.length ? rooms.map(r => {
       const done = Object.values(r.checks || {}).filter(Boolean).length;
       const pend = r.photos.filter(p => !p.driveId).length + r.clips.filter(c => !c.driveId).length;
       return `<button class="item" data-id="${r.id}"><span style="flex:1;min-width:0"><span class="t">${esc(r.name) || 'Unnamed space'}</span><span class="m">${esc([r.spaceType, r.purpose, r.floor].filter(Boolean).join(' · '))}</span><span class="m">${r.photos.length} photo${r.photos.length === 1 ? '' : 's'} · ${done}/${CHECKLIST.length} checks${pend && gd.configured() ? ` · ${pend} not uploaded` : ''}</span></span><span class="chev">›</span></button>`;
     }).join('') : '<div class="empty">No rooms or areas surveyed at this site yet.</div>')
-    + `<div class="stack" style="margin-top:14px">${gd.configured() ? '<button class="btn sec sm" id="driveSite">Save site report to Google Drive</button>' : ''}<button class="btn sec sm" id="jsonSite">Export site file (.json) for another device</button></div>`
+    + `<div class="stack" style="margin-top:14px"><button class="btn sec sm" id="jsonSite">Export site file (.json) for another device</button></div>`
     + (s.lastSynced ? `<p class="muted" style="text-align:center">Survey data last saved to Drive ${new Date(s.lastSynced).toLocaleString('en-GB')}</p>` : '');
   main.querySelectorAll('.item').forEach(b => b.onclick = () => go({ v: 'room', id: b.dataset.id }));
   $('#editSite').onclick = () => go({ v: 'editSite', id: s.id });
-  $('#mdSite').onclick = () => downloadFile(reportName(s, null), buildMd(s, rooms), 'text/markdown');
-  const ds = $('#driveSite'); if (ds) ds.onclick = () => { enqueue({ type: 'report', siteId: s.id }); toast(canSync() ? 'Saving report to Drive…' : 'Report queued — it will upload when connected'); };
+  $('#pdfSite').onclick = e => { if (!rooms.length) { toast('Add at least one room or area first'); return; } makePdf(s, rooms, e.currentTarget); };
   $('#jsonSite').onclick = async () => downloadFile(fileSafe(s.name || 'site') + ' site data.json', JSON.stringify(await siteJson(s, rooms, true)), 'application/json');
   fab.classList.remove('hid'); fab.innerHTML = '<button class="btn" id="addRoom">+ Add room / area</button>';
   $('#addRoom').onclick = async () => { const r = newRoom(s.id); data.rooms.push(r); await idb.put('rooms', r); go({ v: 'room', id: r.id }); };
@@ -719,8 +920,7 @@ function renderRoom(main) {
   ${sec('check', 'Survey checklist', Object.values(r.checks).filter(Boolean).length + '/' + CHECKLIST.length,
     CHECKLIST.map((c, i) => `<label class="chk"><input type="checkbox" data-chk="${i}" ${r.checks[i] ? 'checked' : ''}><span>${esc(c)}</span></label>`).join(''))}
   <div class="stack" style="margin-top:16px">
-    <button class="btn sec sm" id="mdRoom">Download report (.md)</button>
-    ${gd.configured() ? '<button class="btn sec sm" id="driveRoom">Save report to Google Drive</button>' : ''}
+    <button class="btn sm" id="pdfRoom">PDF report for this space</button>
   </div>
   <p style="margin-top:24px"><button class="btn danger sm" id="delRoom">Delete this survey from this device</button></p>`;
 
@@ -735,8 +935,7 @@ function renderRoom(main) {
   renderCalc(r); renderPhotos(r); renderClips(r); setupVoice(r);
   $('#camBtn').onclick = () => $('#cam').click(); $('#libBtn').onclick = () => $('#lib').click();
   $('#cam').onchange = e => addPhotos(r, e.target.files); $('#lib').onchange = e => addPhotos(r, e.target.files);
-  $('#mdRoom').onclick = () => downloadFile(reportName(s, [r]), buildMd(s, [r]), 'text/markdown');
-  const dr = $('#driveRoom'); if (dr) dr.onclick = () => { enqueue({ type: 'report', siteId: r.siteId, roomId: r.id }); toast(canSync() ? 'Saving report to Drive…' : 'Report queued — it will upload when connected'); };
+  $('#pdfRoom').onclick = e => makePdf(s, [r], e.currentTarget);
   $('#delRoom').onclick = async () => {
     const pend = r.photos.filter(p => !p.driveId).length + r.clips.filter(c => !c.driveId).length;
     if (!await ui.confirm('Delete this survey from this device?' + (pend ? `\n\n${pend} photo/clip(s) have not been uploaded and will be lost.` : '') + '\n\nAnything already uploaded stays in Google Drive.', { title: 'Delete survey', ok: 'Delete', danger: true })) return;
@@ -889,6 +1088,14 @@ async function renderSettings(main) {
     <label class="chk"><input type="checkbox" id="keepLocal" ${settings.keepLocal ? 'checked' : ''}><span>Keep full-size photos and clips on the phone after upload</span></label>
     <button class="btn sec sm" id="freeBtn" style="margin-top:8px">Free up space (remove uploaded files from this phone)</button>
   </div>
+  <div class="card"><h2>Report branding</h2>
+    <div style="margin-bottom:8px">${settings.brand && settings.brand.logo ? `<img src="${esc(settings.brand.logo)}" alt="Logo" style="max-height:60px;max-width:100%;background:#fff;padding:4px;border-radius:6px">` : '<p class="muted" style="margin:0">No logo yet. PNG or JPG; a PNG with transparent background looks best.</p>'}</div>
+    <div class="row" style="margin-bottom:12px"><button class="btn sec sm" id="logoBtn">${settings.brand && settings.brand.logo ? 'Change logo' : 'Choose logo'}</button>${settings.brand && settings.brand.logo ? '<button class="btn sec sm" id="logoDel">Remove</button>' : ''}</div>
+    <input type="file" id="logoIn" accept="image/png,image/jpeg" class="hid">
+    ${field('Company name (top of each page)', `<input type="text" id="brCo" value="${esc((settings.brand || {}).company || '')}" placeholder="e.g. Green Monkey AV Ltd">`)}
+    ${field('Footer text (bottom of each page)', `<input type="text" id="brFt" value="${esc((settings.brand || {}).footer || '')}" placeholder="e.g. address · phone · website">`)}
+    <p class="muted" style="margin:0">Saved on this phone. Colleagues set their own.</p>
+  </div>
   <div class="card"><h2>Install</h2>
     <p class="muted">Android: open this page in Chrome → menu ⋮ → <b>Install app</b> (or Add to Home screen). It then opens full screen and works with no signal. Desktop: use the install icon in Chrome or Edge's address bar.</p>
     <button class="btn sec sm hid" id="installBtn">Install app</button>
@@ -900,6 +1107,25 @@ async function renderSettings(main) {
   const dOn = $('#drvOn'); if (dOn) dOn.onchange = async () => { settings.driveOn = dOn.checked; await saveSettings(); kickSync(10); updateSyncBar(); };
   $('#keepLocal').onchange = async e => { settings.keepLocal = e.target.checked; await saveSettings(); };
   $('#freeBtn').onclick = freeSpace;
+  settings.brand = settings.brand || {};
+  $('#logoBtn').onclick = () => $('#logoIn').click();
+  $('#logoIn').onchange = async e => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    try {
+      const u = URL.createObjectURL(f); const im = await loadImg(u); URL.revokeObjectURL(u);
+      const sc = Math.min(1, 800 / Math.max(im.naturalWidth, im.naturalHeight)); const c = document.createElement('canvas');
+      c.width = Math.round(im.naturalWidth * sc); c.height = Math.round(im.naturalHeight * sc);
+      const x = c.getContext('2d'); const png = f.type === 'image/png';
+      if (!png) { x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); }
+      x.drawImage(im, 0, 0, c.width, c.height);
+      settings.brand.logo = png ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', .9);
+      await saveSettings(); toast('Logo saved'); render();
+    } catch (err) { toast('Could not read that image — use PNG or JPG'); }
+  };
+  const ld = $('#logoDel'); if (ld) ld.onclick = async () => { delete settings.brand.logo; await saveSettings(); render(); };
+  let brT; const brSave = () => { clearTimeout(brT); brT = setTimeout(saveSettings, 400); };
+  $('#brCo').oninput = e => { settings.brand.company = e.target.value; brSave(); };
+  $('#brFt').oninput = e => { settings.brand.footer = e.target.value; brSave(); };
   if (deferredInstall) { const ib = $('#installBtn'); ib.classList.remove('hid'); ib.onclick = async () => { deferredInstall.prompt(); deferredInstall = null; ib.classList.add('hid'); }; }
 }
 async function freeSpace() {

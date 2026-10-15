@@ -1,6 +1,6 @@
 /* Service worker: caches the app so it opens with no signal. */
-const CACHE = 'avss-v1.0.4';
-const ASSETS = ['./', './index.html', './app.js', './styles.css', './config.js', './manifest.webmanifest',
+const CACHE = 'avss-v1.0.5';
+const ASSETS = ['./', './index.html', './app.js', './styles.css', './config.js', './manifest.webmanifest', './jspdf.umd.min.js',
   './icon-192.png', './icon-512.png', './maskable-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
