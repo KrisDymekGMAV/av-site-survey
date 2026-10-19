@@ -91,6 +91,8 @@ AV Surveys/                      ← the folder you chose
 
 - **Site → PDF report** makes one report for every space at the site; **PDF report for this space** at the bottom of a space makes a single-space report.
 - Contents: cover page (site, client, contact, survey date, surveyor, list of spaces), then per space: details, client requirements, measurements and display-size estimate, environment, infrastructure, existing equipment, notes, voice-note list, checklist and photos (two per row, with captions).
+- Before building, **What to include** lets you tick the sections (cover page, space details, client requirements, measurements, display estimate, environment, infrastructure, existing equipment, notes, voice notes, checklist, photos), choose photos per row (1 large / 2 / 3 compact), checklist items (all / ticked / not ticked) and, for a site report, which spaces. Your section choices are remembered for next time.
+- To leave a single photo out, tap it in the survey and untick **Include in PDF report**.
 - When it's ready choose **Share** (email, Teams, WhatsApp…), **Download**, or **Save to Google Drive** (uploads into the site or space folder, now or when back online).
 - Works offline. Full-size photos on the phone are used; if a photo is only in Drive, it's downloaded when connected, otherwise the thumbnail is used and marked *low-resolution preview*.
 - **Branding:** ⚙ Settings → *Report branding* — logo (PNG or JPG; transparent PNG looks best), company name (top of each page) and footer text. Stored per phone.
